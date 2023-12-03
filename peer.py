@@ -30,6 +30,7 @@ NAME = ":]"
 #Only needed if I do the mining part
 MESSAGES = ["She", "sells", "sea", "shells", "by the", "sea", "shore."]
 
+STATS_TIMEOUT = 0.25
 PEER_TIMEOUT = 90   #every minute and a half, remove dead peer
 REGOSSIP = 30       #every thirty seconds (as per instructions)
 RECONSENSUS = 120   #every 2 minutes
@@ -57,7 +58,14 @@ class Peer :
         if ( self.hostname == peer.hostname and self.portnum == peer.portnum ) :
             result = True
         return result
-    
+
+
+class Stat :
+    def __init__(self, height:int, hash:str, id:int) :
+        self.height = height
+        self.hash = hash
+        self.id = id
+
 
 #Class containing the pertinent information stored in a block
 class Block : 
@@ -145,6 +153,8 @@ class TimeoutQueue :
                         protocols.resetGossips()
                         protocols.sendGossip()
                         #print("WE BACK BAYABY")
+                    elif self.timeoutList[i].type == "RECONSENSUS" :
+                        protocols.doConsensus()
                     elif self.timeoutList[i].type == "PEER" :
                         protocols.PEERS.pop(i)
                         
@@ -168,6 +178,7 @@ class Protocols :
         self.BLOCKS = Blockchain #This is the blockchain that we have
         self.TIMEOUTQUEUE = timeoutQueue
         self.doingConsensus = False
+        self.STATSLIST = []
     #functions
     def sendGossip ( self ) :
         response = {
@@ -289,11 +300,15 @@ class Protocols :
         for i in range(len(self.PEERS)) :
             try :
                 SOCKET.sendto(json.dumps(response).encode(),(self.PEERS[i].hostname,self.PEERS[i].portnum))
+                SOCKET.settimeout(STATS_TIMEOUT)
+                data, adr = SOCKET.recvfrom(2048)
+                jsonObj = json.loads(data)
+                self.processStatsReply(jsonObj)
             except :
                 print("Something went wrong when asking for stats:")
                 traceback.print_exc()
 
-    def sendStatsReply ( self, host:str, port:int ) :
+    def sendStatsReply (self, host:str, port:int) :
         response = {
             "type" : "STATS_REPLY",
             "height" : self.BLOCKS.height,
@@ -309,32 +324,31 @@ class Protocols :
     def processStats (self, message) :
         print("Received stats message: " + str(message))
         #We'll just need to send a stats reply back to the person who sent the message to us
-        for i in range(len(self.PEERS)) :
-            self.sendStatsReply()
+        self.sendStatsReply(message['host'],message['port'])
     
-    def processStatsReply (stats, message) :
+    #This function is different since it is only called within the sendStats function
+    def processStatsReply (self, message) :
         print("Received stats reply: " + str(message))
-        #Not entirely sure what to do here.
         #This is where we see what their height and what their hash is.
         #Maybe have a list of peers with heights and hashes and how many of them agree on which combination
+        stat = Stat(message['height'],message['hash'],len(self.STATSLIST))
+        self.STATSLIST.append(stat)
 
     def doConsensus (self) :
         #Do a consensus here
         self.doingConsensus = True
-        results = self.sendStats()
-        self.findLongest(results)
+        self.sendStats()
+        self.findLongest()
         self.doingConsensus = False
         
-    def findLongest (stats) :
-        theJson = []
-        for i in 3 :
-            theJson[i] = json.dumps(stats[i])
-        maxHeight = max(theJson['height'])
-        indecies = theJson['height'] == maxHeight
-        
-        for i in indecies :
-            hashes = theJson[i].get('hash')
-        
+    def findLongest (self) :
+        #Let's sort the list by heights
+        self.STATSLIST.sort(key = self.STATSLIST.height)
+        #Now let's sort it by the hash
+        for i in range(len(self.STATSLIST)) :
+            #Compare the hashes of each of the retreived stats
+            pass
+
         #check for the majority hashes
         #DO STUFF HERE
 
@@ -419,6 +433,7 @@ class ProcessMessage :
         
     def joinNetwork (self) :
         self.protocols.sendGossip()
+        self.protocols.doConsensus()
         
     def processMessage ( self, message ) :
         #Loading the information we received from bytes into a json object
@@ -434,8 +449,8 @@ class ProcessMessage :
             self.protocols.processGossipReply(jsonObj)
         elif ( jsonObj['type'] == "STATS" ) :
             self.protocols.processStats(jsonObj)
-        elif ( jsonObj['type'] == "STATS_REPLY" ) :
-            self.protocols.processStatsReply(jsonObj)
+        #elif ( jsonObj['type'] == "STATS_REPLY" ) :
+        #    self.protocols.processStatsReply(jsonObj)
         elif ( jsonObj['type'] == "ANNOUNCE" ) :
             self.protocols.processAnnounce(jsonObj)
         elif ( jsonObj['type'] == "GET_BLOCK" ) :
