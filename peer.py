@@ -20,6 +20,7 @@ import json
 import time
 import traceback
 import random
+import itertools
 
 
 # constants
@@ -61,10 +62,11 @@ class Peer :
 
 
 class Stat :
-    def __init__(self, height:int, hash:str, id:int) :
+    def __init__(self, height:int, hash:str, host:str, port:int) :
         self.height = height
         self.hash = hash
-        self.id = id
+        self.host = host
+        self.port = port
 
 
 #Class containing the pertinent information stored in a block
@@ -303,7 +305,7 @@ class Protocols :
                 SOCKET.settimeout(STATS_TIMEOUT)
                 data, adr = SOCKET.recvfrom(2048)
                 jsonObj = json.loads(data)
-                self.processStatsReply(jsonObj)
+                self.processStatsReply(jsonObj,adr)
             except :
                 print("Something went wrong when asking for stats:")
                 traceback.print_exc()
@@ -327,11 +329,11 @@ class Protocols :
         self.sendStatsReply(message['host'],message['port'])
     
     #This function is different since it is only called within the sendStats function
-    def processStatsReply (self, message) :
+    def processStatsReply (self, message, address) :
         print("Received stats reply: " + str(message))
         #This is where we see what their height and what their hash is.
         #Maybe have a list of peers with heights and hashes and how many of them agree on which combination
-        stat = Stat(message['height'],message['hash'],len(self.STATSLIST))
+        stat = Stat(message['height'],message['hash'],address[0],address[1])
         self.STATSLIST.append(stat)
 
     def doConsensus (self) :
@@ -342,15 +344,21 @@ class Protocols :
         self.doingConsensus = False
         
     def findLongest (self) :
-        #Let's sort the list by heights
-        self.STATSLIST.sort(key = self.STATSLIST.height)
-        #Now let's sort it by the hash
-        for i in range(len(self.STATSLIST)) :
-            #Compare the hashes of each of the retreived stats
-            pass
-
-        #check for the majority hashes
-        #DO STUFF HERE
+        #Let's sort the list by heights so that we can then get the groups of heights
+        self.STATSLIST.sort(key = lambda x: x.get('height'))
+        #heights = set(map(lambda x:x[0], self.STATSLIST))
+        heights = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, lambda x:x[0]))]
+        
+        #Now let's sort the hashes from those heights
+        for i in range(len(heights)):
+            heights[i].sort(key = lambda x: x[1])
+        #This is a list of the different grouped hashes
+        #theGroups = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, lambda x: x[1]))]
+        
+        #Now that all of the hashes are now grouped together in their respective heights, we should be able to
+        #choose the most agreed-upon one
+        mostAgreedUponChain = max(heights[1],key=len)[1]
+        mostAgreedUponHeight = heights[0]
 
     def sendGetBlock (self, block) :
         response = {
