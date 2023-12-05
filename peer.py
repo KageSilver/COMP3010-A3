@@ -20,6 +20,7 @@ import json
 import time
 import traceback
 import random
+import hashlib
 import itertools
 
 
@@ -31,7 +32,7 @@ NAME = ":]"
 #Only needed if I do the mining part
 MESSAGES = ["She", "sells", "sea", "shells", "by the", "sea", "shore."]
 
-STATS_TIMEOUT = 0.25
+STATS_TIMEOUT = 5
 PEER_TIMEOUT = 90   #every minute and a half, remove dead peer
 REGOSSIP = 30       #every thirty seconds (as per instructions)
 RECONSENSUS = 120   #every 2 minutes
@@ -48,13 +49,13 @@ class Peer :
     def __init__(self,host,port) :
         self.hostname = host
         self.portnum = port
-    def addPeer (self, peer) :
+    def addPeer ( self, peer ) :
         self.peerList.append(peer)
-    def dropPeer (self, peer) :
+    def dropPeer ( self, peer ) :
         self.peerList.remove(peer)
-    def getPeers (self) :
+    def getPeers ( self ) :
         return self.peerList
-    def equals (self, peer) :
+    def equals ( self, peer ) :
         result = False
         if ( self.hostname == peer.hostname and self.portnum == peer.portnum ) :
             result = True
@@ -84,14 +85,16 @@ class Blockchain :
     def __init__(self) :
         self.height = 0
         self.hash = ''
+        self.message = ''
+        self.name = ''
         self.nonce = ''
         self.time = 0
     
-    def addBlock (self, block:Block) :
+    def addBlock ( self, block:Block ) :
         self.blockList.append(block)
         self.updateValues()
     
-    def updateValues(self) :
+    def updateValues ( self ) :
         heights = []
         for i in range(len(self.blockList)) :
             heights.append(self.blockList[i].height)
@@ -197,6 +200,9 @@ class Protocols :
             try : 
                 for i in range(len(self.PEERS)) :
                     SOCKET.sendto(json.dumps(response).encode(),(self.PEERS[i].hostname,self.PEERS[i].portnum))
+                    #data, adr = SOCKET.recvfrom(2048)
+                    #jsonObj = json.loads(data)
+                    #self.processGossipReply(jsonObj)
             except :
                 print("Something went wrong in sending to host:")
                 traceback.print_exc()
@@ -205,6 +211,9 @@ class Protocols :
             for i in range(3) :
                 try :
                     SOCKET.sendto(json.dumps(response).encode(),(thePeers[i].hostname,thePeers[i].portnum))
+                    #data, adr = SOCKET.recvfrom(2048)
+                    #jsonObj = json.loads(data)
+                    #self.processGossipReply(jsonObj)
                 except :
                     print("Something went wrong in sending to peers:")
                     traceback.print_exc()
@@ -298,6 +307,7 @@ class Protocols :
         response = {
             "type" : "STATS"
         }
+        print("Sending stats: " + str(response))
         #Send stats to all peers!
         for i in range(len(self.PEERS)) :
             try :
@@ -310,12 +320,13 @@ class Protocols :
                 print("Something went wrong when asking for stats:")
                 traceback.print_exc()
 
-    def sendStatsReply (self, host:str, port:int) :
+    def sendStatsReply ( self, host:str, port:int ) :
         response = {
             "type" : "STATS_REPLY",
             "height" : self.BLOCKS.height,
             "hash" : self.BLOCKS.hash
         }
+        print("Sending stats reply: " + str(response))
         try :        
             #Sending it back to the one who sent the first response
             SOCKET.sendto(json.dumps(response).encode(),(host,port))
@@ -323,10 +334,10 @@ class Protocols :
             print("Something happened when sending the stats reply back:")
             traceback.print_exc()
     
-    def processStats (self, message) :
+    def processStats ( self, message, addr ) :
         print("Received stats message: " + str(message))
         #We'll just need to send a stats reply back to the person who sent the message to us
-        self.sendStatsReply(message['host'],message['port'])
+        self.sendStatsReply(addr[0],addr[1])
     
     #This function is different since it is only called within the sendStats function
     def processStatsReply (self, message, address) :
@@ -336,62 +347,130 @@ class Protocols :
         stat = Stat(message['height'],message['hash'],address[0],address[1])
         self.STATSLIST.append(stat)
 
-    def doConsensus (self) :
+    def doConsensus ( self ) :
         #Do a consensus here
         self.doingConsensus = True
         self.sendStats()
         self.findLongest()
         self.doingConsensus = False
-        
-    def findLongest (self) :
+    
+    #This needs to be rewritten, wtf is going on here LMAO
+    def findLongest ( self ) :
         #Let's sort the list by heights so that we can then get the groups of heights
         self.STATSLIST.sort(key = lambda x: x.get('height'))
         #heights = set(map(lambda x:x[0], self.STATSLIST))
-        heights = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, lambda x:x[0]))]
+        heights = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, key=lambda x:x[0]))]
         
+        #The most-agreed-upon heights is at the front of our list, should also be a list still?
+        print(len(heights))
+        mostAgreedUponHeight = heights[0]
+                
         #Now let's sort the hashes from those heights
         for i in range(len(heights)):
             heights[i].sort(key = lambda x: x[1])
         #This is a list of the different grouped hashes
         #theGroups = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, lambda x: x[1]))]
-        
+
         #Now that all of the hashes are now grouped together in their respective heights, we should be able to
         #choose the most agreed-upon one
         mostAgreedUponChain = max(heights[1],key=len)[1]
-        mostAgreedUponHeight = heights[0]
+        
+        peers = self.STATSLIST[mostAgreedUponHeight, mostAgreedUponChain]
+        
+        self.askForBlocks(mostAgreedUponHeight, mostAgreedUponChain, peers)
+    
+    def askForBlocks ( self, height, chain, peers ) :
+        #Send GET_BLOCK requests to all peers that agreed
+        self.sendGetBlock(height, peers)
 
-    def sendGetBlock (self, block) :
+    def sendGetBlock ( self, height, peers ) :
         response = {
             "type" : "GET_BLOCK",
-            "height" : self.BLOCKS.height
+            "height" : height
         }
-        for i in range(len(self.PEERS)) :
+        for i in range(len(peers)) :
             try :
-                SOCKET.sendto(json.dumps(response).encode(),(self.PEERS[i].hostname,self.PEERS[i].portnum))
+                SOCKET.sendto(json.dumps(response).encode(),(peers[i].hostname,peers[i].portnum))
+                data, adr = SOCKET.recvfrom(2048)
+                jsonObj = json.loads(data)
+                self.processGetBlockReply(jsonObj,adr)
             except :
                 print("Something happened when sending the get block:")
                 traceback.print_exc()
+    
+    def sendGetBlockReply ( self, height:int, host:str, port:int ) :
+        #Valid height given?
+        if ( height < self.BLOCKS[len(self.BLOCKS)].height ) :
+            height = None
+        else :
+            response  = {
+                "type" : "GET_BLOCK_REPLY",
+                "hash" : self.BLOCKS[len(self.BLOCKS)].hash,
+                "height" : height,
+                "messages" : self.BLOCKS[len(self.BLOCKS)].message,
+                "minedBy" : self.BLOCKS[len(self.BLOCKS)].name,
+                "nonce" : self.BLOCKS[len(self.BLOCKS)].nonce,
+                "timestamp" : self.BLOCKS[len(self.BLOCKS)].time
+            }
+            #sending it back to the one who sent the first response
+            try :
+                SOCKET.sendto(json.dumps(response).encode(),(host,port))
+            except :
+                print("Something happened when sending the get block reply:")
+                traceback.print_exc()
+    
+    def processGetBlock ( self, message, adr ) :
+        print("Received get block: " + str(message))
+        self.sendGetBlockReply(adr[0],adr[1])
+    
+    def processGetBlockReply ( self, message, address ) :
+        print("Received get block reply: " + str(message) + "from: " + address)
+        
+        #Do some stuff, is this just adding a block to our current chain?
+        
+        if ( len(message['messages']) <= 0 or len(message['messages'] > 10 ) ) :
+            print("Invalid messages provided in block.")
+        else :
+            chain = hashlib.sha256()
+            
+            chain.update(message['hash'].encode())
 
-    def sendGetBlockReply ( self, host:str, port:int ) :
-        response  = {
-            "type" : "GET_BLOCK_REPLY",
-            "hash" : self.BLOCKS[len(self.BLOCKS)].hash,
-            "height" : self.BLOCKS[len(self.BLOCKS)].height,
-            "messages" : MESSAGES,
-            "minedBy" : NAME,
-            "nonce" : self.BLOCKS[len(self.BLOCKS)].nonce,
-            "timestamp" : self.BLOCKS[len(self.BLOCKS)].time
-        }
-        #sending it back to the one who sent the first response
-        try :
-            SOCKET.sendto(json.dumps(response).encode(),(host,port))
-        except :
-            print("Something happened when sending the get block reply:")
-            traceback.print_exc()
-               
-    def processAnnounce () :
+            chain.update(message['minedby'].encode())
+            
+            for i in range(len(message['messages'])) :
+                chain.update(message['messages'][i].encode())
+        
+            chain.update(message['timestamp'].to_bytes(8,'big'))
+            
+            chain.update(message['nonce'].encode())
+            
+            hash = chain.hexdigest()
+
+            if hash[-1*DIFFICULTY:] != '0' * DIFFICULTY:
+                print("Block was not difficult enough: {}".format(hash))
+        
+            block = Block(message['height'],hash,message['nonce'],message['time'])
+            self.validateBlock(block)
+    
+    def validateBlock ( self, block ) :
+        if ( block.height == 0) :
+            pass
+        #Add block to our chain in here or smt
+    
+    #This validates our entire blockchain
+    def validateChain ( self ) :
+        for i in range(len(self.BLOCKS)) :
+            self.validateBlock(self.BLOCKS[i])
+    
+    def processAnnounce ( self, message ) :
         #process the announce message
-        print("got an announcement")
+        print("Got an announcement: " + str(message))
+        
+        if message['hash'][-1*DIFFICULTY:] != '0' * DIFFICULTY:
+            print("Block was not difficult enough: {}".format(hash))
+        else :
+            block = Block(message['height'],message['hash'],message['nonce'],message['time'])
+            self.validateBlock(block)
         #the format is as follows
         '''
         {
@@ -441,9 +520,12 @@ class ProcessMessage :
         
     def joinNetwork (self) :
         self.protocols.sendGossip()
+
+    def afterWeJoined ( self ) :
         self.protocols.doConsensus()
+        self.protocols.validateChain()
         
-    def processMessage ( self, message ) :
+    def processMessage ( self, message, adr ) :
         #Loading the information we received from bytes into a json object
         try :
             jsonObj = json.loads(message)
@@ -456,15 +538,17 @@ class ProcessMessage :
         elif ( jsonObj['type'] == "GOSSIP_REPLY" ) :
             self.protocols.processGossipReply(jsonObj)
         elif ( jsonObj['type'] == "STATS" ) :
-            self.protocols.processStats(jsonObj)
+            self.protocols.processStats(jsonObj,adr)
         #elif ( jsonObj['type'] == "STATS_REPLY" ) :
         #    self.protocols.processStatsReply(jsonObj)
         elif ( jsonObj['type'] == "ANNOUNCE" ) :
             self.protocols.processAnnounce(jsonObj)
         elif ( jsonObj['type'] == "GET_BLOCK" ) :
-            self.protocols.processGetBlock(jsonObj)
-        elif ( jsonObj['type'] == "GET_BLOCK_RePLY" ) :
-            self.protocols.processGetBlockReply(jsonObj)
+            self.protocols.processGetBlock(jsonObj, adr)
+        #elif ( jsonObj['type'] == "GET_BLOCK_REPLY" ) :
+        #    self.protocols.processGetBlockReply(jsonObj)
+        elif ( jsonObj['type'] == "CONSENSUS" ) :
+            self.protocols.doConsensus()
         else :
             print("Invalid procedure requested.")
     
@@ -491,13 +575,18 @@ print('listening on port:', PORT)
 processingMessages = ProcessMessage()
 processingMessages.joinNetwork()
 
+buffer = 0
+
 while True :
     try :
         #Getting any message being sent to us
         data, addr = SOCKET.recvfrom(2048)
 
-        processingMessages.processMessage(data)
+        processingMessages.processMessage(data,addr)
         processingMessages.handleTimeouts()
+
+        if buffer == 20 :
+            processingMessages.afterWeJoined()
     
     except KeyboardInterrupt as ki:
         print("User exited process.")
