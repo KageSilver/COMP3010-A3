@@ -72,34 +72,15 @@ class Stat :
 
 #Class containing the pertinent information stored in a block
 class Block : 
-    def __init__(self, height:int, hash:str, nonce:str, time:time) :
+    blockchain = []
+    def __init__(self, height:int, hash:str, messages, nonce:str, time:time) :
         self.height = height
         self.hash = hash
+        self.messages = messages #A list of messages
         self.nonce = nonce
         self.time = time
-
-
-#Class containing the current blockchain for our peer
-class Blockchain :
-    blockList = []
-    def __init__(self) :
-        self.height = 0
-        self.hash = ''
-        self.message = ''
-        self.name = ''
-        self.nonce = ''
-        self.time = 0
-    
-    def addBlock ( self, block:Block ) :
-        self.blockList.append(block)
-        self.updateValues()
-    
-    def updateValues ( self ) :
-        heights = []
-        for i in range(len(self.blockList)) :
-            heights.append(self.blockList[i].height)
-            
-        self.height = max(heights)
+    def addBlock(self, block) :
+        self.blockchain.append(block)
     
     
 #Class for the queue of timeouts
@@ -144,16 +125,17 @@ class TimeoutQueue :
         timeout = Timeout(type)
         self.timeoutList.append(timeout)
         
+    def getTimeout ( self, type ) :
+        return self.timeoutList[type]
+
     #Send it the protocols object so it can do a call back to it
-    def handleTimeouts(self, protocols) :
+    def handleTimeouts( self, protocols ) :
         #this won't run if there aren't any timeouts in the list
         removedTimeouts = []
         if len(self.timeoutList) > 0 :
             for i in range(len(self.timeoutList)) :
                 #print("IN THE FOR LOOP")
                 if self.timeoutList[i].expires <= time.time() :
-                    print(self.timeoutList[i].expires)
-                    print(time.time())
                     if self.timeoutList[i].type == "REGOSSIP" :
                         protocols.resetGossips()
                         protocols.sendGossip()
@@ -180,7 +162,7 @@ class Protocols :
         peer.addPeer(peer)
         self.PEERS = peer.getPeers()
         self.GOSSIPS = [] #Literally just to keep track of the gossips that we've gotten already
-        self.BLOCKS = Blockchain #This is the blockchain that we have
+        self.BLOCKS = [] #This is the blockchain that we have
         self.TIMEOUTQUEUE = timeoutQueue
         self.doingConsensus = False
         self.STATSLIST = []
@@ -200,9 +182,6 @@ class Protocols :
             try : 
                 for i in range(len(self.PEERS)) :
                     SOCKET.sendto(json.dumps(response).encode(),(self.PEERS[i].hostname,self.PEERS[i].portnum))
-                    #data, adr = SOCKET.recvfrom(2048)
-                    #jsonObj = json.loads(data)
-                    #self.processGossipReply(jsonObj)
             except :
                 print("Something went wrong in sending to host:")
                 traceback.print_exc()
@@ -211,9 +190,6 @@ class Protocols :
             for i in range(3) :
                 try :
                     SOCKET.sendto(json.dumps(response).encode(),(thePeers[i].hostname,thePeers[i].portnum))
-                    #data, adr = SOCKET.recvfrom(2048)
-                    #jsonObj = json.loads(data)
-                    #self.processGossipReply(jsonObj)
                 except :
                     print("Something went wrong in sending to peers:")
                     traceback.print_exc()
@@ -239,31 +215,34 @@ class Protocols :
                     traceback.print_exc()
 
     def processGossip ( self, message ) :
-        senderHost = message['host']
-        senderPort = message['port']
-        if message['id'] != ID :
-            #We haven't seen any gossips yet
-            if len(self.GOSSIPS) == 0 :
-                self.sendGossipReply(senderHost,senderPort)
-                self.sendReceivedGossip(message)
-                self.GOSSIPS.append(message['id'])
-            else :
-                goAhead = True
-                for i in range(len(self.GOSSIPS)) :
-                    #We haven't seen this gossip message yet
-                    if ( message['id'] == self.GOSSIPS[i] ) :
-                        goAhead = False
-                        #print(len(self.GOSSIPS))
-                if goAhead != True :
+        if ( type(message['host']) == str and type(message['port']) == int ) :
+            senderHost = message['host']
+            senderPort = message['port']
+            if message['id'] != ID :
+                #We haven't seen any gossips yet
+                if len(self.GOSSIPS) == 0 :
                     self.sendGossipReply(senderHost,senderPort)
                     self.sendReceivedGossip(message)
                     self.GOSSIPS.append(message['id'])
+                else :
+                    goAhead = True
+                    for i in range(len(self.GOSSIPS)) :
+                        #We haven't seen this gossip message yet
+                        if ( message['id'] == self.GOSSIPS[i] ) :
+                            goAhead = False
+                            #print(len(self.GOSSIPS))
+                    if goAhead != True :
+                        self.sendGossipReply(senderHost,senderPort)
+                        self.sendReceivedGossip(message)
+                        self.GOSSIPS.append(message['id'])
+            else :
+                #This is to reset itself in the timeout, confirming it's still here
+                #This kinda sucks so...
+                for i in range(len(self.PEERS)) :
+                    if (self.PEERS[i].hostname == senderHost and self.PEERS[i].portnum == senderPort) :
+                        self.TIMEOUTQUEUE.updatePeer(senderHost,senderPort)
         else :
-            #This is to reset itself in the timeout, confirming it's still here
-            #This kinda sucks so...
-            for i in range(len(self.PEERS)) :
-                if (self.PEERS[i].hostname == senderHost and self.PEERS[i].portnum == senderPort) :
-                    self.TIMEOUTQUEUE.updatePeer(senderHost,senderPort)
+            print("The gossip that was sent had an invalid format.")
         
     def sendGossipReply ( self, host:str, port:int ) :
         response = {
@@ -287,21 +266,22 @@ class Protocols :
         print("Received gossip reply: " + str(message))
         #Basically just joining the network by adding this peer to our list
         #First peer to join! (other than the well-known one)
-        peer = Peer(message['host'],message['port'])
-        if len(self.PEERS) <= 1 :
-            self.PEERS.append(peer)
-            self.TIMEOUTQUEUE.addTimeout("PEER")
-            print(len(self.PEERS))
-        else :
-            doIt = True
-            for i in range(len(self.PEERS)) :
-                if (self.PEERS[i].equals(peer)) :
-                    doIt = False
-            if doIt == True :
-                #WILL NEED TO ADD MORE LOGIC TO RESET THE TIMEOUT SO THAT THEY DON'T GET CUT OUT THEN READDED
+        if ( type(message['host']) == str and type(message['port']) == int ) :
+            peer = Peer(message['host'],message['port'])
+            if len(self.PEERS) <= 1 :
                 self.PEERS.append(peer)
                 self.TIMEOUTQUEUE.addTimeout("PEER")
-                print(len(self.PEERS))
+            else :
+                doIt = True
+                for i in range(len(self.PEERS)) :
+                    if (self.PEERS[i].equals(peer)) :
+                        doIt = False
+                if doIt == True :
+                    #WILL NEED TO ADD MORE LOGIC TO RESET THE TIMEOUT SO THAT THEY DON'T GET CUT OUT THEN READDED
+                    self.PEERS.append(peer)
+                    self.TIMEOUTQUEUE.addTimeout("PEER")
+        else :
+            print("The given gossip reply had an invalid format.")
 
     def sendStats (self) :
         response = {
@@ -312,50 +292,75 @@ class Protocols :
         for i in range(len(self.PEERS)) :
             try :
                 SOCKET.sendto(json.dumps(response).encode(),(self.PEERS[i].hostname,self.PEERS[i].portnum))
-                SOCKET.settimeout(STATS_TIMEOUT)
-                data, adr = SOCKET.recvfrom(2048)
-                jsonObj = json.loads(data)
-                self.processStatsReply(jsonObj,adr)
             except :
                 print("Something went wrong when asking for stats:")
                 traceback.print_exc()
 
     def sendStatsReply ( self, host:str, port:int ) :
-        response = {
-            "type" : "STATS_REPLY",
-            "height" : self.BLOCKS.height,
-            "hash" : self.BLOCKS.hash
-        }
-        print("Sending stats reply: " + str(response))
-        try :        
-            #Sending it back to the one who sent the first response
-            SOCKET.sendto(json.dumps(response).encode(),(host,port))
-        except :
-            print("Something happened when sending the stats reply back:")
-            traceback.print_exc()
+        #only send a stats reply if we have a chain
+        if ( len(self.BLOCKS ) >= 1 ) :
+            response = {
+                "type" : "STATS_REPLY",
+                "height" : self.BLOCKS[len(self.BLOCKS)-1].height, #This logic is definitely wrong.
+                "hash" : self.BLOCKS[len(self.BLOCKS)-1].hash
+            }
+            print("Sending stats reply: " + str(response))
+            try :        
+                #Sending it back to the one who sent the first response
+                SOCKET.sendto(json.dumps(response).encode(),(host,port))
+            except :
+                print("Something happened when sending the stats reply back:")
+                traceback.print_exc()
+        else :
+            print("We don't have any blocks to send...")
     
-    def processStats ( self, message, addr ) :
+    def processStats ( self, message, address ) :
         print("Received stats message: " + str(message))
         #We'll just need to send a stats reply back to the person who sent the message to us
-        self.sendStatsReply(addr[0],addr[1])
+        self.sendStatsReply(address[0],address[1])
     
-    #This function is different since it is only called within the sendStats function
     def processStatsReply (self, message, address) :
         print("Received stats reply: " + str(message))
-        #This is where we see what their height and what their hash is.
-        #Maybe have a list of peers with heights and hashes and how many of them agree on which combination
-        stat = Stat(message['height'],message['hash'],address[0],address[1])
-        self.STATSLIST.append(stat)
+        #Here I'm creating a stats instance to add to our list of obtained stats, but checking if it's valid first
+        if ( type(message['height']) == int and type(message['hash']) == str ) :
+            stat = Stat(message['height'],message['hash'],address[0],address[1])
+            self.STATSLIST.append(stat)
+        else : 
+            print("The stats reply message we received had an invalid format.")
+
+    def resetStats ( self ) :
+        self.STATSLIST = []
 
     def doConsensus ( self ) :
-        #Do a consensus here
-        self.doingConsensus = True
-        self.sendStats()
-        self.findLongest()
-        self.doingConsensus = False
+        #We're already doing a consensus. Let's just ignore it?
+        if ( self.doingConsensus ) :
+            print("Already doing a consensus...")
+        else :
+            if ( self.TIMEOUTQUEUE.getTimeout("RECONSENSUS") == True ) :
+                self.TIMEOUTQUEUE.addTimeout("RECONSENSUS")
+
+            self.doingConsensus = True
+            self.sendStats() 
+            #After sending the stats out, we need to wait to get all of them back before trying to find which
+            #one is the longest.
+            #self.findLongest()
+            self.doingConsensus = False
+            #self.resetStats()
     
     #This needs to be rewritten, wtf is going on here LMAO
     def findLongest ( self ) :
+        #Make a 2D list of everyone who agrees on the height and hash contained within the message.
+        #so, if the messages are the same, then they can all go into that index of the list
+        agreed = [[]]
+
+        print(len(self.STATSLIST))
+
+        agreed.append(self.STATSLIST[0])
+
+        for i in range(1,len(self.STATSLIST)) :
+            if ( (agreed[i].height == self.STATSLIST[i].height) and (agreed[i].hash == self.STATSLIST[i].hash) ) :
+                pass
+        '''
         #Let's sort the list by heights so that we can then get the groups of heights
         self.STATSLIST.sort(key = lambda x: x.get('height'))
         #heights = set(map(lambda x:x[0], self.STATSLIST))
@@ -378,7 +383,8 @@ class Protocols :
         peers = self.STATSLIST[mostAgreedUponHeight, mostAgreedUponChain]
         
         self.askForBlocks(mostAgreedUponHeight, mostAgreedUponChain, peers)
-    
+        '''
+        
     def askForBlocks ( self, height, chain, peers ) :
         #Send GET_BLOCK requests to all peers that agreed
         self.sendGetBlock(height, peers)
@@ -388,15 +394,18 @@ class Protocols :
             "type" : "GET_BLOCK",
             "height" : height
         }
+        #Here so that we can avoid starting off with a bad peer. Starting at a random index.
+        counter = int(random()*len(peers))
         for i in range(len(peers)) :
             try :
-                SOCKET.sendto(json.dumps(response).encode(),(peers[i].hostname,peers[i].portnum))
-                data, adr = SOCKET.recvfrom(2048)
-                jsonObj = json.loads(data)
-                self.processGetBlockReply(jsonObj,adr)
+                SOCKET.sendto(json.dumps(response).encode(),(peers[counter].hostname,peers[counter].portnum))
+                #Wait for their response in a timeout amount of time . . .
             except :
                 print("Something happened when sending the get block:")
                 traceback.print_exc()
+            counter = counter + 1
+            if ( counter % len(peers) == 0 ) :
+                counter = 0
     
     def sendGetBlockReply ( self, height:int, host:str, port:int ) :
         #Valid height given?
@@ -412,65 +421,104 @@ class Protocols :
                 "nonce" : self.BLOCKS[len(self.BLOCKS)].nonce,
                 "timestamp" : self.BLOCKS[len(self.BLOCKS)].time
             }
-            #sending it back to the one who sent the first response
+            #sending it back to the one who sent the first message
             try :
                 SOCKET.sendto(json.dumps(response).encode(),(host,port))
             except :
                 print("Something happened when sending the get block reply:")
                 traceback.print_exc()
     
-    def processGetBlock ( self, message, adr ) :
+    def processGetBlock ( self, message, address ) :
+        #Message only needed for printing
         print("Received get block: " + str(message))
-        self.sendGetBlockReply(adr[0],adr[1])
+        self.sendGetBlockReply(address[0],address[1])
     
     def processGetBlockReply ( self, message, address ) :
-        print("Received get block reply: " + str(message) + "from: " + address)
+        print("Received get block reply: " + str(message) + "\tfrom: " + address)
         
-        #Do some stuff, is this just adding a block to our current chain?
-        
-        if ( len(message['messages']) <= 0 or len(message['messages'] > 10 ) ) :
-            print("Invalid messages provided in block.")
-        else :
+        if ( type(message['height']) == str and type(message['hash']) == str and type(message['minedby']) == str and
+            type(message['messages']) == list and type(message['timestamp']) == time and type(message['nonce']) == str) :
+
+            #Do some stuff, creating a hash and block from the message we got and then validating the block
+
             chain = hashlib.sha256()
-            
+                    
             chain.update(message['hash'].encode())
 
             chain.update(message['minedby'].encode())
-            
+                    
             for i in range(len(message['messages'])) :
                 chain.update(message['messages'][i].encode())
-        
+                
             chain.update(message['timestamp'].to_bytes(8,'big'))
-            
+                    
             chain.update(message['nonce'].encode())
-            
+                    
             hash = chain.hexdigest()
-
-            if hash[-1*DIFFICULTY:] != '0' * DIFFICULTY:
-                print("Block was not difficult enough: {}".format(hash))
-        
-            block = Block(message['height'],hash,message['nonce'],message['time'])
+                
+            block = Block(message['height'],hash,message['messages'],message['nonce'],message['time'])
             self.validateBlock(block)
+        else :
+            print("The format of the given get block reply was invalid.")
     
     def validateBlock ( self, block ) :
-        if ( block.height == 0) :
-            pass
-        #Add block to our chain in here or smt
+        #How do I know what the correct hash is though?
+        result = True
+        if ( block.hash != self.BLOCKS[len(self.BLOCKS)-1].hash) :
+            print("The hash from this block doesn't match the correct hash.")
+            result = False
+        else :
+            #Checking if there are too many messages
+            if ( len(block.messages) <= 0 or len(block.messages) > 10 ) :
+                print("The number of messages in this block is invalid!")
+                result = False
+            else :
+                #Checking the length of each of the messages themselves
+                messagesLen = 0
+                for i in range (len(block.messages)) :
+                    messagesLen = messagesLen + len(block.messages[i])
+                if (messagesLen <= 0 or messagesLen > 20) :
+                    print("The total length of the messages in this block is invalid!")
+                    result = False
+                else :
+                    #Checking the length of the nonce
+                    if len(block.nonce) <= 0 or len(block.nonce) > 40 :
+                        print("The length of the nonce of this block is invalid!")
+                        result = False
+                    else :
+                        #Checking the hash's difficulty
+                        if block.hash[-1*DIFFICULTY:] != '0' * DIFFICULTY :
+                            print("The block's hash was not difficult enough: {}".format(hash))
+                            result = False
+        #If it gets through all of these statements, then it is a valid block
+        return result
     
     #This validates our entire blockchain
     def validateChain ( self ) :
-        for i in range(len(self.BLOCKS)) :
-            self.validateBlock(self.BLOCKS[i])
+        isValid = True
+        for i in range(len(self.BLOCKS)) and isValid :
+            isValid = self.validateBlock(self.BLOCKS[i])
+        #Once we're at the end, it should be a valid chain
+        if isValid :
+            print("The chain is still valid! :D")
+        else :
+            print("The chain is not valid! :(")
     
     def processAnnounce ( self, message ) :
         #process the announce message
         print("Got an announcement: " + str(message))
-        
-        if message['hash'][-1*DIFFICULTY:] != '0' * DIFFICULTY:
-            print("Block was not difficult enough: {}".format(hash))
+        if ( type(message['hash']) == str and type(message['minedby']) == str and type(message['messages']) == list
+             and type(message['timestamp']) == time and type(message['nonce']) == str and type(message['height']) == str ) :
+            if message['hash'][-1*DIFFICULTY:] != '0' * DIFFICULTY:
+                print("Block was not difficult enough: {}".format(hash))
+            else :
+                block = Block(message['height'],message['hash'],message['nonce'],message['time'])
+                self.validateBlock(block)
+                #Now add this block to our chain.
+                self.BLOCKS.append(block)
         else :
-            block = Block(message['height'],message['hash'],message['nonce'],message['time'])
-            self.validateBlock(block)
+            print("The given announcement message had an invalid format.")
+
         #the format is as follows
         '''
         {
@@ -482,7 +530,7 @@ class Protocols :
             "hash" : myHash,
             "timestamp" : blockTime
         }
-        '''    
+        '''  
 
 
 #Class to handle the command line input
@@ -535,20 +583,28 @@ class ProcessMessage :
         #Now let's work with the json. Figure out what needs to be done.
         if ( jsonObj['type'] == "GOSSIP" ) :
             self.protocols.processGossip(jsonObj)
+            
         elif ( jsonObj['type'] == "GOSSIP_REPLY" ) :
             self.protocols.processGossipReply(jsonObj)
+
         elif ( jsonObj['type'] == "STATS" ) :
             self.protocols.processStats(jsonObj,adr)
-        #elif ( jsonObj['type'] == "STATS_REPLY" ) :
-        #    self.protocols.processStatsReply(jsonObj)
+
+        elif ( jsonObj['type'] == "STATS_REPLY" ) :
+            self.protocols.processStatsReply(jsonObj, adr)
+
         elif ( jsonObj['type'] == "ANNOUNCE" ) :
             self.protocols.processAnnounce(jsonObj)
+
         elif ( jsonObj['type'] == "GET_BLOCK" ) :
             self.protocols.processGetBlock(jsonObj, adr)
-        #elif ( jsonObj['type'] == "GET_BLOCK_REPLY" ) :
-        #    self.protocols.processGetBlockReply(jsonObj)
-        elif ( jsonObj['type'] == "CONSENSUS" ) :
+
+        elif ( jsonObj['type'] == "GET_BLOCK_REPLY" ) :
+            self.protocols.processGetBlockReply(jsonObj)
+
+        elif ( jsonObj['type'] == "CONSENSUS" or jsonObj['type'] == "DO_CONSENSUS" ) :
             self.protocols.doConsensus()
+
         else :
             print("Invalid procedure requested.")
     
@@ -585,9 +641,12 @@ while True :
         processingMessages.processMessage(data,addr)
         processingMessages.handleTimeouts()
 
+        #Just here for testing for now . . .
         if buffer == 20 :
             processingMessages.afterWeJoined()
     
+        buffer = buffer+1
+
     except KeyboardInterrupt as ki:
         print("User exited process.")
         sys.exit(0)
