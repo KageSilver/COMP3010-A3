@@ -11,4 +11,7 @@ You can run the peer by typing: `python3 peer.py ip port` where ip is the ip you
 I clean the peers in my TimeoutsQueue class.
 
 #### Choosing longest chain:
-I choose the longest chain in the findLongest() python in the Protocols class.
+I choose the longest chain in the findLongest() function in the Protocols class.
+
+#### Validating chain:
+I validate my chain by calling the validateChain() function in the Protocols class. That function iterates through the list of blocks that I have and validates each of them by calling the validateBlock() function in the Protocols class. The validateBlock() function checks the hash of the given block and many other conditions/constraints outlined in the assignment instructions/discussions. If all of the conditions are met, it will return true for it being a valid block.
