@@ -170,7 +170,8 @@ class TimeoutQueue :
                     #longest chain process.
                     elif self.timeoutList[i].type == "STATS_REPLY" :
                         protocols.findLongest()
-                        
+                    
+                    #If a join timeout happens, then we're going to start a consensus
                     elif self.timeoutList[i].type == "JOIN" :
                         protocols.doConsensus()
                     
@@ -256,28 +257,22 @@ class Protocols :
             
             senderHost = message['host']
             senderPort = message['port']
-            if message['id'] != ID :
-                #We haven't seen any gossips yet
-                if len(self.GOSSIPS) == 0 :
+            #We haven't seen any gossips yet
+            if len(self.GOSSIPS) == 0 :
+                self.sendGossipReply(senderHost,senderPort)
+                self.sendReceivedGossip(message)
+                self.GOSSIPS.append(message['id'])
+            else :
+                goAhead = True
+                for i in range(len(self.GOSSIPS)) :
+                    #We've seen this gossip message, we shouldn't send a gossip reply or add it to our list
+                    if ( message['id'] == self.GOSSIPS[i] ) :
+                        goAhead = False
+                if goAhead == True :
                     self.sendGossipReply(senderHost,senderPort)
                     self.sendReceivedGossip(message)
                     self.GOSSIPS.append(message['id'])
-                else :
-                    goAhead = True
-                    for i in range(len(self.GOSSIPS)) :
-                        #We've seen this gossip message, we shouldn't send a gossip reply or add it to our list
-                        if ( message['id'] == self.GOSSIPS[i] ) :
-                            goAhead = False
-                    if goAhead == True :
-                        self.sendGossipReply(senderHost,senderPort)
-                        self.sendReceivedGossip(message)
-                        self.GOSSIPS.append(message['id'])
-            else :
-                #This is to reset itself in the timeout, confirming it's still here
-                #This kinda sucks so...
-                for i in range(len(self.PEERS)) :
-                    if (self.PEERS[i].hostname == senderHost and self.PEERS[i].portnum == senderPort) :
-                        self.TIMEOUTQUEUE.updatePeer(senderHost,senderPort)
+
             #If this is our official joining into the network, set our flag to true! Can do a consensus now.
             if ( self.joined == False ) :
                 self.joined = True
@@ -400,8 +395,10 @@ class Protocols :
         agreed.append(self.STATSLIST[0])
 
         for i in range(1,len(self.STATSLIST)) :
-            if ( (agreed[i].height == self.STATSLIST[i].height) and (agreed[i].hash == self.STATSLIST[i].hash) ) :
+            if ( (agreed[i][i].height == self.STATSLIST[i].height) and (agreed[i].hash == self.STATSLIST[i].hash) ) :
                 pass
+        #Need to ask for blocks as this comes from the consensus
+        #self.askForBlocks(height,chain,peers)
         '''
         #Let's sort the list by heights so that we can then get the groups of heights
         self.STATSLIST.sort(key = lambda x: x.get('height'))

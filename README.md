@@ -7,6 +7,9 @@ Nothing requires compilation.
 You can run the peer by typing: `python3 peer.py ip port` where ip is the ip you're connecting from and where port is the port number that you're using for that ip. I use 8680-8684.
 
 ### Other notes:
+#### Starting consensus:
+I start a consensus by setting a timeout before we join the network, and triggering the doConsensus function in the Protocols class once we get a gossip message from the network, meaning our peer has successfully joined the network.
+
 #### Peer cleaning:
 I clean the peers in my TimeoutsQueue class.
 
