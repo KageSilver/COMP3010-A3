@@ -21,7 +21,6 @@ import time
 import traceback
 import random
 import hashlib
-import itertools
 
 
 # constants
@@ -33,7 +32,7 @@ NAME = ":]"
 MESSAGES = ["She", "sells", "sea", "shells", "by the", "sea", "shore."]
 
 JOIN_DELAY = 10000  #Set to a huge number as it'll just be overridden
-STATS_TIMEOUT = 20
+STATS_TIMEOUT = 5
 PEER_TIMEOUT = 90   #every minute and a half, remove dead peer
 REGOSSIP = 30       #every thirty seconds (as per instructions)
 RECONSENSUS = 120   #every 2 minutes
@@ -88,11 +87,14 @@ class Block :
 class Timeout : 
     peerIds = 0
     
-    def __init__(self, type:str) :
+    def __init__(self, type:str, host=None, port=None) :
         self.start = time.time()
         self.type = type
         self.expires = self.expiryTime()
-        self.id = self.setId()
+        if ( host != None and port != None ) :
+            self.host = host
+            self.port = port
+
     def expiryTime (self) :
         if self.type == "REGOSSIP" :
             result = self.start + REGOSSIP
@@ -104,18 +106,13 @@ class Timeout :
             result = self.start + STATS_TIMEOUT
         elif self.type == "JOIN" :
             result = self.start + JOIN_DELAY
+        elif self.type == "GET_BLOCK" :
+            result = self.start + STATS_TIMEOUT #Doesn't need to be different, really
         return result
-    def setId (self) :
-        if self.type == "REGOSSIP" :
-            result = 1 #placeholder
-        elif self.type == "RECONSENSUS" :
-            result = 1 #placeholder
-        elif self.type == "PEER" :
-            result = self.peerIds
-            self.peerIds = self.peerIds + 1
-        return result
+
     def getExpiry (self) :
         return self.expires
+
     def __str__(self) :
         return "start: "+str(self.start)+"  type: "+str(self.type)+"   expires: "+str(self.expires)
 
@@ -126,8 +123,8 @@ class TimeoutQueue :
     def __init__(self) :
         pass
         
-    def addTimeout ( self, type:str ) :
-        timeout = Timeout(type)
+    def addTimeout ( self, type:str, host, port ) :
+        timeout = Timeout(type, host, port)
         self.timeoutList.append(timeout)
         
     def getTimeout ( self, type ) :
@@ -138,10 +135,16 @@ class TimeoutQueue :
         return result
     
     #Used to forcibly remove a specific type of timeout from the list of timeouts we have
-    def removeTimeout ( self, type ) :
-        for i in range(len(self.timeoutList)) :
-            if self.timeoutList[i].type == type :
-                self.timeoutList.pop(i)
+    def removeTimeout ( self, type, host=None, port=None ) :
+        if ( host != None and port != None ) :
+            for i in range(len(self.timeoutList)) :
+                if ( self.timeoutList[i].type == type and 
+                    (self.timeoutList[i].host == host and self.timeoutList[i].port == port) ):
+                    self.timeoutList.pop(i)
+        else :
+            for i in range(len(self.timeoutList)) :
+                if self.timeoutList[i].type == type :
+                    self.timeoutList.pop(i)
 
     #Send it the protocols object so it can do a call back to it
     def handleTimeouts ( self, protocols ) :
@@ -174,6 +177,9 @@ class TimeoutQueue :
                     #If a join timeout happens, then we're going to start a consensus
                     elif self.timeoutList[i].type == "JOIN" :
                         protocols.doConsensus()
+
+                    elif self.timeoutList[i].type == "GET_BLOCK" :
+                        protocols.checkGetPeers(self.timeoutList[i].host, self.timeoutList[i].port)
                     
                     #Adding all of the timeout to the removedTimeouts list so we can remove them all at the end
                     removedTimeouts.append(i)
@@ -202,6 +208,12 @@ class Protocols :
         self.TIMEOUTQUEUE = timeoutQueue
         self.STATSLIST = []
         self.joined = False
+        self.longestChain = [] #Holds the information for the longest chain computations
+        self.agreedPeers = []  #Holds the information for the peers who agree on the longest chain
+        self.getBlocks = []    #A list to hold which responses we got back
+        self.highestHeight = 0
+        self.highestHeightIndex = 0
+
     #functions
     def sendGossip ( self ) :
         response = {
@@ -252,9 +264,7 @@ class Protocols :
 
     #When we get a gossip message, we know that we've successfully joined the network.
     def processGossip ( self, message ) :
-        #Checking if the message itself is in the valid format
-        if ( type(message['host']) == str and type(message['port']) == int ) :
-            
+        try :            
             senderHost = message['host']
             senderPort = message['port']
             #We haven't seen any gossips yet
@@ -278,8 +288,8 @@ class Protocols :
                 self.joined = True
                 #Now it's time to join the network
                 self.TIMEOUTQUEUE.joinedNetwork()
-        else :
-            print("The gossip that was sent had an invalid format.")
+        except :
+            traceback.print_exc()
     
     def sendGossipReply ( self, host:str, port:int ) :
         response = {
@@ -303,7 +313,7 @@ class Protocols :
         print("Received gossip reply: " + str(message))
 
         #Checking if the message itself is in the valid format
-        if ( type(message['host']) == str and type(message['port']) == int ) :
+        try :
             #First peer to join! (other than the well-known one)
             peer = Peer(message['host'],message['port'])
             if len(self.PEERS) <= 1 :
@@ -318,7 +328,7 @@ class Protocols :
                     #WILL NEED TO ADD MORE LOGIC TO RESET THE TIMEOUT SO THAT THEY DON'T GET CUT OUT THEN READDED
                     self.PEERS.append(peer)
                     self.TIMEOUTQUEUE.addTimeout("PEER")
-        else :
+        except :
             print("The given gossip reply had an invalid format.")
 
     def sendStats (self) :
@@ -352,7 +362,7 @@ class Protocols :
                 print("Something happened when sending the stats reply back:")
                 traceback.print_exc()
         else :
-            print("We don't have any blocks to send...")
+            print("We don't have any stats to send...")
     
     def processStats ( self, message, address ) :
         print("Received stats message: " + str(message))
@@ -362,11 +372,11 @@ class Protocols :
     def processStatsReply ( self, message, address ) :
         print("Received stats reply: " + str(message))
         #Here I'm creating a stats instance to add to our list of obtained stats, but checking if it's valid first
-        if ( type(message['height']) == int and type(message['hash']) == str ) :
+        try :
             stat = Stat(message['height'],message['hash'],address[0],address[1])
             self.STATSLIST.append(stat)
-        else : 
-            print("The stats reply message we received had an invalid format.")
+        except : 
+            traceback.print_exc()
 
     def resetStats ( self ) :
         self.STATSLIST = []
@@ -381,93 +391,139 @@ class Protocols :
             #After sending the stats out, we need to wait to get all of them back before trying to find which
             #one is the longest. Added a timeout in the sendStats function, which will then trigger finding
             #the longest chain with what we've got so far.
+            
+            #We will need to ask for the blocks from everyone, starting a timeout, keeping track of which
+            #peers answered, and then validate the chain once we've gotten all of the peers' responses.
+            #If the chain was invalid, call this function again, passing it the next-longest hash.
+            # self.askForBlocks()
         else :
             print("Already doing a consensus...")    
     
-    #This needs to be rewritten, wtf is going on here LMAO
     def findLongest ( self ) :
-        #Make a 2D list of everyone who agrees on the height and hash contained within the message.
-        #so, if the messages are the same, then they can all go into that index of the list
-        agreed = [[]]
+        #Only called once we have all of the stats replies, so STATSLIST shouldn't be empty
+        if ( len(self.STATSLIST) == 0 ) :
+            print("Nobody sent us stat replies, we can't decide what the longest chain is...")
+        #Continue, as planned
+        else :
+            #Fill it with a starting list of the first stat, so we can append to it
+            self.longestChain[0] = [self.STATSLIST[0]]
 
-        print(len(self.STATSLIST))
+            #looping through the entire stats list, skipping the first index (we already added it)
+            for i in range(1,len(self.STATSLIST)) :
+                notAdded = True
+                #looping through the entire length of our 2D list
+                for j in range(len(self.longestChain) and notAdded ) :
+                    #If the hash and height is equal, append it to the end of this list
+                    if ( self.STATSLIST[i].height == self.longestChain[j][0].height and
+                        self.STATSLIST[i].hash == self.longestChain[j][0].hash ) :
+                        self.longestChain[j][0].append(self.STATSLIST[i])
+                        notAdded = False
+                if notAdded == True :
+                    #We haven't seen any matches for height and hash so far, let's add it as a new
+                    #entry to the longestChain list
+                    self.longestChain.append([self.STATSLIST[i]])
+        self.findMajority()
 
-        agreed.append(self.STATSLIST[0])
+    def findMajority ( self ) :
+            #Used to identify which index and which height is the max height we found
+            self.highestHeightIndex = 0
+            self.highestHeight = self.longestChain[0][0].height
+            #Looping through our longest chain list to see which height is the highest and where
+            #it is stored within that list
+            for i in range(1,len(self.longestChain)) :
+                if ( self.highestHeight < self.longestChain[i][0].height ) :
+                    self.highestHeight = self.longestChain[i][0].height
+                    self.highestHeightIndex = i
+                #edge case for there being two equal heights, but only one has the majority
+                if ( self.highestHeight == self.longestChain[i][0].height ) :
+                    #If the "new" one has more peers, then that's actually the highest we want to keep track of
+                    if ( len(self.longestChain[self.highestHeightIndex][0]) < len(self.longestChain[i][0].height) ) :
+                        self.highestHeight = self.longestChain[i][0].height
+                        self.highestHeightIndex = i
+            
+            #So now we know that the highest height is stored in highestHeight with the majority of peers
+            #This list of peers is so that we can send them all a get block message
+            self.agreedPeers = []
+            for i in range(len(self.longestChain[self.highestHeightIndex])) :
+                self.agreedPeers.append(Peer(self.longestChain[self.highestHeightIndex][i].host,
+                                  self.longestChain[self.highestHeightIndex][i].port))
 
-        for i in range(1,len(self.STATSLIST)) :
-            if ( (agreed[i][i].height == self.STATSLIST[i].height) and (agreed[i].hash == self.STATSLIST[i].hash) ) :
-                pass
-        #Need to ask for blocks as this comes from the consensus
-        #self.askForBlocks(height,chain,peers)
-        '''
-        #Let's sort the list by heights so that we can then get the groups of heights
-        self.STATSLIST.sort(key = lambda x: x.get('height'))
-        #heights = set(map(lambda x:x[0], self.STATSLIST))
-        heights = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, key=lambda x:x[0]))]
-        
-        #The most-agreed-upon heights is at the front of our list, should also be a list still?
-        print(len(heights))
-        mostAgreedUponHeight = heights[0]
-                
-        #Now let's sort the hashes from those heights
-        for i in range(len(heights)):
-            heights[i].sort(key = lambda x: x[1])
-        #This is a list of the different grouped hashes
-        #theGroups = [list(g) for g in itertools.groupby(sorted(self.STATSLIST, lambda x: x[1]))]
+            #Now we can ask for all of the blocks from these peers
+            self.askForBlocks()
 
-        #Now that all of the hashes are now grouped together in their respective heights, we should be able to
-        #choose the most agreed-upon one
-        mostAgreedUponChain = max(heights[1],key=len)[1]
-        
-        peers = self.STATSLIST[mostAgreedUponHeight, mostAgreedUponChain]
-        
-        self.askForBlocks(mostAgreedUponHeight, mostAgreedUponChain, peers)
-        '''
-        
-    def askForBlocks ( self, height, chain, peers ) :
-        #Send GET_BLOCK requests to all peers that agreed
-        self.sendGetBlock(height, peers)
+    #This is where I do the load balancing for sending the get blocks, giving the indices of the
+    #height of the chain that we currently have to all of the peers who agreed upon the chain
+    def askForBlocks ( self ) :
+        pass
 
-    def sendGetBlock ( self, height, peers ) :
+    #Used to know which peer to drop from our known peers list and what we need to send out for it.
+    #We'll need to resend the get blocks for the indices that weren't filled.
+    def resendGetBlock ( self, host, port ) :
+        pass
+
+    #Rewrite this function
+    def sendGetBlock ( self, host=None, port=None ) :
         response = {
             "type" : "GET_BLOCK",
-            "height" : height
+            "height" : self.highestHeight-1
         }
-        #Here so that we can avoid starting off with a bad peer. Starting at a random index.
-        counter = int(random()*len(peers))
-        for i in range(len(peers)) :
+        #Send it to all peers that agreed
+        if ( host == None and port == None ) :
+            #Restarting the get block process, we need a fresh list of them
+            self.getBlocks = []
+            #Here so that we can avoid starting off with a bad peer. Starting at a random index.
+            counter = int(random()*len(self.agreedPeers))
+            for i in range(len(self.agreedPeers)) :
+                try :
+                    SOCKET.sendto(json.dumps(response).encode(),(self.agreedPeers[counter].hostname,
+                                                                self.agreedPeers[counter].portnum))
+                    self.TIMEOUTQUEUE.addTimeout("GET_BLOCK",self.agreedPeers[counter].hostname,
+                                                self.agreedPeers[counter].portnum)
+                except :
+                    print("Something happened when sending the get blocks:")
+                    traceback.print_exc()
+                counter = counter + 1
+                if ( counter % len(self.agreedPeers) == 0 ) :
+                    counter = 0
+        #Or just send it to the one peer that we need to send it to
+        else :
             try :
-                SOCKET.sendto(json.dumps(response).encode(),(peers[counter].hostname,peers[counter].portnum))
-                #Wait for their response in a timeout amount of time . . .
+                SOCKET.sendto(json.dumps(response).encode(),(host,port))
+                self.TIMEOUTQUEUE.addTimeout("GET_BLOCK",host,port)
             except :
                 print("Something happened when sending the get block:")
                 traceback.print_exc()
-            counter = counter + 1
-            if ( counter % len(peers) == 0 ) :
-                counter = 0
     
     def sendGetBlockReply ( self, height:int, host:str, port:int ) :
-        #Valid height given?
         #only send a get block reply if we have a chain
-        if ( len(self.BLOCKS ) >= 1 ) :
-            if ( height < self.BLOCKS[len(self.BLOCKS)].height ) :
-                height = None
+        if ( len(self.BLOCKS) >= 1 ) :
+            #Was a valid height provided?
+            if ( height <= 0 or height >= len(self.BLOCKS) ) :
+                response =  {
+                    "type" : "GET_BLOCK_REPLY",
+                    "hash" : None,
+                    "height" : None,
+                    "messages" : None,
+                    "minedBy" : None,
+                    "nonce" : None,
+                    "timestamp" : None
+                }
             else :
                 response  = {
                     "type" : "GET_BLOCK_REPLY",
-                    "hash" : self.BLOCKS[len(self.BLOCKS)].hash,
+                    "hash" : self.BLOCKS[height].hash,
                     "height" : height,
-                    "messages" : self.BLOCKS[len(self.BLOCKS)].message,
-                    "minedBy" : self.BLOCKS[len(self.BLOCKS)].name,
-                    "nonce" : self.BLOCKS[len(self.BLOCKS)].nonce,
-                    "timestamp" : self.BLOCKS[len(self.BLOCKS)].time
+                    "messages" : self.BLOCKS[height].message,
+                    "minedBy" : self.BLOCKS[height].name,
+                    "nonce" : self.BLOCKS[height].nonce,
+                    "timestamp" : self.BLOCKS[height].time
                 }
-                #sending it back to the one who sent the first message
-                try :
-                    SOCKET.sendto(json.dumps(response).encode(),(host,port))
-                except :
-                    print("Something happened when sending the get block reply:")
-                    traceback.print_exc()
+            #sending it back to the one who sent the first message
+            try :
+                SOCKET.sendto(json.dumps(response).encode(),(host,port))
+            except :
+                print("Something happened when sending the get block reply:")
+                traceback.print_exc()
     
     def processGetBlock ( self, message, address ) :
         #Message variable only needed for printing
@@ -477,9 +533,7 @@ class Protocols :
     def processGetBlockReply ( self, message, address ) :
         print("Received get block reply: " + str(message) + "\tfrom: " + address)
         
-        if ( type(message['height']) == str and type(message['hash']) == str and type(message['minedby']) == str and
-            type(message['messages']) == list and type(message['timestamp']) == time and type(message['nonce']) == str) :
-
+        try :
             #Do some stuff, creating a hash and block from the message we got and then validating the block
 
             chain = hashlib.sha256()
@@ -498,10 +552,26 @@ class Protocols :
             hash = chain.hexdigest()
                 
             block = Block(message['height'],hash,message['messages'],message['nonce'],message['time'])
-            self.validateBlock(block)
-        else :
-            print("The format of the given get block reply was invalid.")
+
+            #If we got here, it means that the block should be good to go.
+            self.BLOCKS.append(block)
+
+            #This is here to confirm that we've received this getBlockReply for our timeout
+            self.getBlocks.append(Peer(address[0],address[1]))
+        except :
+            traceback.print_exc()
     
+    def checkGetBlock ( self, host, port ) :
+        gotBlock = False
+        for i in range(len(self.getBlocks)) and gotBlock == False :
+            if (self.getBlocks[i].hostname == host and self.getBlocks[i].portnum == port) :
+                #The timeout is ok since we already got its reply.
+                gotBlock = True
+        #So if we didn't get the block, we have to resend the request
+        if ( gotBlock == False ) :
+            self.resendGetBlocks(host, port)
+
+
     def validateBlock ( self, block ) :
         #How do I know what the correct hash is though?
         result = True
@@ -608,10 +678,6 @@ class ProcessMessage :
     def joinNetwork (self) :
         self.protocols.sendGossip()
         self.timeoutQueue.addTimeout("JOIN")
-
-    def afterWeJoined ( self ) :
-        self.protocols.doConsensus()
-        self.protocols.validateChain()
         
     def processMessage ( self, message, adr ) :
         #Loading the information we received from bytes into a json object
@@ -680,12 +746,6 @@ while True :
 
         processingMessages.processMessage(data,addr)
         processingMessages.handleTimeouts()
-
-        #Just here for testing for now . . .
-        if buffer == 20 :
-            processingMessages.afterWeJoined()
-    
-        buffer = buffer+1
 
     except KeyboardInterrupt as ki:
         print("User exited process.")
