@@ -172,6 +172,7 @@ class TimeoutQueue :
                     
                     #If a reconsensus timeout happens, we're going to rerun a consensus
                     elif timeout.type == "RECONSENSUS" :
+                        protocols.resetConsensus()
                         protocols.doConsensus()
                         self.addTimeout("RECONSENSUS")
                     
@@ -408,6 +409,20 @@ class Protocols :
     def resetStats ( self ) :
         self.statsList = []
 
+    #Reset everything we need to do a consensus
+    def resetConsensus ( self ) :
+        print("in resetConsensus")
+        self.timeoutQueue.removeTimeout("STATS_REPLY")
+        self.getBlocks = []
+        self.agreedPeers = []
+        self.longestChain = []
+        self.highestHeight = 0
+        self.highestHeightIndex = 0 #Just of the longest chain list
+        self.highestHash = ''
+        self.chainReady = False
+        self.checkedBlocks = []
+        self.blocks = []
+
     def doConsensus ( self ) :
         print("in doConsensus")
         #If there's no timeout for waiting for stats replies currently, let's start a consensus 
@@ -536,7 +551,7 @@ class Protocols :
                 counter = 0
 
     def sendGetBlock ( self, height, host, port ) :
-        print("in sendGetBlock")
+        #print("in sendGetBlock")
         response = {
             "type" : "GET_BLOCK",
             "height" : height
@@ -589,7 +604,7 @@ class Protocols :
         self.sendGetBlockReply(address[0],address[1])
     
     def processGetBlockReply ( self, message, address ) :
-        print("in processGetBlockReply")
+        #print("in processGetBlockReply")
         #print("Received get block reply: " + str(message) + "\tfrom: " + address)
         
         try :
@@ -607,7 +622,7 @@ class Protocols :
             traceback.print_exc()
     
     def checkGetBlock ( self, host, port ) :
-        print("in checkGetBlock")
+        #print("in checkGetBlock")
         gotBlock = False
         for i in range(len(self.getBlocks)) :
             if (self.getBlocks[i].host == host and self.getBlocks[i].port == port) :
@@ -620,13 +635,14 @@ class Protocols :
             self.resendGetBlocks(host, port)
             self.checkedBlocks.append(1)
 
-
     def validateBlock ( self, block, prevHash=None ) :
         print("in validateBlock")
         #Return the hash representation for this block
         result = True
         thisHash = None
         try :
+            print(str(block.hash))
+            print(str(prevHash))
             if ( block.hash != prevHash) :
                 print("The hash in this block doesn't match the previous hash.")
                 result = False
@@ -665,8 +681,8 @@ class Protocols :
                             
                 for i in range(len(block.messages)) :
                     thisHash.update(block.messages[i].encode())
-                        
-                thisHash.update(block.timestamp.to_bytes(8,'big'))
+
+                thisHash.update(int(block.timestamp).to_bytes(8,'big'))
                             
                 thisHash.update(block.nonce.encode())
                 
@@ -683,6 +699,7 @@ class Protocols :
         prevHash = None
         isValid = True
         for i in range(len(self.blocks)) :
+            print("PRINTING OUR GENESIS BLOCK: " + str(self.blocks[0].hash))
             prevHash = self.validateBlock(self.blocks[i],prevHash)
             if ( prevHash == None ) :
                 isValid = False
@@ -843,6 +860,7 @@ while True :
     try :
         #Getting any message being sent to us
         data, addr = SOCKET.recvfrom(2048)
+        #SOCKET.settimeout(2)
 
         processingMessages.processMessage(data,addr)
         processingMessages.handleTimeouts()
@@ -850,3 +868,6 @@ while True :
     except KeyboardInterrupt as ki:
         print("User exited process.")
         sys.exit(0)
+
+    except TimeoutError :
+        pass
