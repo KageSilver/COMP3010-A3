@@ -7,12 +7,12 @@
 # INSTRUCTOR	: Robert Guderian
 # ASSIGNMENT	: Assignment 3
 # 
-# REMARKS: 
+# REMARKS:      Sorry that it's all in one
+#   file, grader. <3
 #
 #------------------------------------------
 
 #imports
- 
 import socket
 import sys
 import uuid
@@ -26,15 +26,15 @@ import hashlib
 # constants
 HOST = ''
 PORT = 8680 #I have 8680-8684
-ID = str(uuid.uuid4()) #Creating a uuid for this peer...?
+ID = str(uuid.uuid4()) #Creating a uuid for me, this peer
 NAME = ":]"
-#Only needed if I do the mining part
+#Only needed if I do the mining part, kept in to give a chuckle, mayhaps? :p
 MESSAGES = ["She", "sells", "sea", "shells", "by the", "sea", "shore."]
 
-JOIN_DELAY = 10000  #Set to a huge number as it'll just be overridden
-STATS_TIMEOUT = 10
-PEER_TIMEOUT = 90   #every minute and a half, remove dead peer
-REGOSSIP = 30       #every thirty seconds (as per instructions)
+JOIN_DELAY = 10000  #Set to a huge number as it'll just be overridden once we join the network
+STATS_TIMEOUT = 10  #Timeout when waiting for the get blocks and the stats requests
+PEER_TIMEOUT = 90   #every minute and a half, remove peer
+REGOSSIP = 20       #every twenty seconds (test network seemed to keep losing it when it was 30)
 RECONSENSUS = 120   #every 2 minutes
 CHECK_CHAIN = 5     #every 5 seconds
 
@@ -74,7 +74,7 @@ class Stat :
 #Class containing the pertinent information stored in a block
 class Block : 
     blockchain = []
-    def __init__(self, height:int, hash:str, messages, minedBy:str, nonce:str, timestamp:int) :
+    def __init__(self, height:int, hash:str, messages, minedBy:str, nonce:str, timestamp) :
         self.height = height
         self.hash = hash
         self.messages = messages #A list of messages
@@ -168,7 +168,6 @@ class TimeoutQueue :
                     if timeout.type == "REGOSSIP" :
                         protocols.resetGossips()
                         protocols.sendGossip()
-                        self.addTimeout("REGOSSIP")
                     
                     #If a reconsensus timeout happens, we're going to rerun a consensus
                     elif timeout.type == "RECONSENSUS" :
@@ -198,11 +197,6 @@ class TimeoutQueue :
     def joinedNetwork ( self, protocols ) :
         self.timeoutList.pop(0)
         protocols.doConsensus()
-        #self.timeoutList[0].expires = time.time()
-        #for i in range(len(self.timeoutList)) :
-        #    if self.timeoutList[i].type == "JOIN" :
-        #        self.timeoutList[i].expires = time.time()
-        #        break
     
     def updatePeer ( self, host, port ) :
         pass
@@ -327,28 +321,16 @@ class Protocols :
             traceback.print_exc()
     
     def resetGossips ( self ) :
-        self.gossips.clear()
+        self.gossips = []
     
     def processGossipReply ( self, message ) :
         print("in processGossipReply")
         #print("Received gossip reply: " + str(message))
 
-        #Checking if the message itself is in the valid format
         try :
-            #First peer to join! (other than the well-known one)
             peer = Peer(message['host'],message['port'])
-            if len(self.peers) <= 1 :
-                self.peers.append(peer)
-                self.timeoutQueue.addTimeout("PEER")
-            else :
-                doIt = True
-                for i in range(len(self.peers)) :
-                    if (self.peers[i].equals(peer)) :
-                        doIt = False
-                if doIt == True :
-                    #WILL NEED TO ADD MORE LOGIC TO RESET THE TIMEOUT SO THAT THEY DON'T GET CUT OUT THEN READDED
-                    self.peers.append(peer)
-                    self.timeoutQueue.addTimeout("PEER")
+            self.peers.append(peer)
+            self.timeoutQueue.addTimeout("PEER")
         except :
             print("The given gossip reply had an invalid format.")
 
@@ -361,7 +343,7 @@ class Protocols :
         #Send stats to all peers at once!
         for i in range(len(self.peers)) :
             try :
-                print("Sending to: " + str(self.peers[i].host) + ":" + str(self.peers[i].port))
+                #print("Sending to: " + str(self.peers[i].host) + ":" + str(self.peers[i].port))
                 SOCKET.sendto(json.dumps(response).encode(),(self.peers[i].host,self.peers[i].port))
             except :
                 print("Something went wrong when asking for stats:")
@@ -377,7 +359,6 @@ class Protocols :
             response = {
                 "type" : "STATS_REPLY",
                 "height" : self.highestHeight,
-                #"hash" : self.blocks[self.highestHeight-1].hash
                 "hash" : self.highestHash
             }
             #print("Sending stats reply: " + str(response))
@@ -531,10 +512,10 @@ class Protocols :
     def resendGetBlocks ( self, host, port ) :
         print("in resendGetBlocks")
         #Finding the index of the bad peer and removing it
-        for i in range(len(self.agreedPeers)) :
-            if ( self.agreedPeers[i].host == host and self.agreedPeers[i].port == port ) :
-                self.agreedPeers.pop(i)
-                break
+        #for i in range(len(self.agreedPeers)) :
+        #    if ( self.agreedPeers[i].host == host and self.agreedPeers[i].port == port ) :
+        #        self.agreedPeers.pop(i)
+        #        break
         
         heights = []
         #Finding which indices weren't filled
@@ -636,58 +617,68 @@ class Protocols :
             self.checkedBlocks.append(1)
 
     def validateBlock ( self, block, prevHash=None ) :
-        print("in validateBlock")
+        #print("in validateBlock")
         #Return the hash representation for this block
         result = True
         thisHash = None
         try :
-            print(str(block.hash))
-            print(str(prevHash))
-            if ( block.hash != prevHash) :
-                print("The hash in this block doesn't match the previous hash.")
+            #print(str(block.hash))
+            #print(str(prevHash))
+            #print()
+            #print(str(block.messages))
+            #print(str(block.minedBy))
+            #print(str(block.timestamp))
+            #print(str(block.nonce))
+            #Checking if there are too many messages
+            if ( len(block.messages) <= 0 or len(block.messages) > 10 ) :
+                print("The number of messages in this block is invalid! " + str())
                 result = False
             else :
-                #Checking if there are too many messages
-                if ( len(block.messages) <= 0 or len(block.messages) > 10 ) :
-                    print("The number of messages in this block is invalid! " + str())
+                #Checking the length of each of the messages themselves
+                messagesLen = 0
+                for i in range(len(block.messages)) :
+                    messagesLen = len(block.messages[i])
+                if (messagesLen <= 0 or messagesLen > 20) :
+                    print("The length of the messages in this block is invalid! " + str(messagesLen))
                     result = False
                 else :
-                    #Checking the length of each of the messages themselves
-                    messagesLen = 0
-                    for i in range(len(block.messages)) :
-                        messagesLen = len(block.messages[i])
-                    if (messagesLen <= 0 or messagesLen > 20) :
-                        print("The length of the messages in this block is invalid! " + str(messagesLen))
+                    #Checking the length of the nonce
+                    if len(block.nonce) <= 0 or len(block.nonce) > 40 :
+                        print("The length of the nonce of this block is invalid! " + block.nonce)
                         result = False
                     else :
-                        #Checking the length of the nonce
-                        if len(block.nonce) <= 0 or len(block.nonce) > 40 :
-                            print("The length of the nonce of this block is invalid! " + block.nonce)
-                            result = False
-                        else :
-                            #Checking the hash's difficulty
-                            if block.hash != None :
-                                if block.hash[-1*DIFFICULTY:] != '0' * DIFFICULTY :
-                                    print("The block's hash was not difficult enough: {}".format(hash))
-                                    result = False
+                        #Checking the hash's difficulty
+                        if block.hash != None :
+                            if block.hash[-1*DIFFICULTY:] != '0' * DIFFICULTY :
+                                print("The block's hash was not difficult enough: {}".format(hash))
+                                result = False
             #If it gets through all of these statements, then it is a valid block
             if result :
                 thisHash = hashlib.sha256()
                 #We already have the genesis block, include the hash.
-                if ( block.hash != None ) :
-                    thisHash.update(block.hash.encode())
+                if ( prevHash != None ) :
+                    thisHash.update(prevHash.encode())
 
-                thisHash.update(block.minedBy.encode())
+                thisHash.update((block.minedBy).encode())
                             
                 for i in range(len(block.messages)) :
-                    thisHash.update(block.messages[i].encode())
+                    thisHash.update((block.messages[i]).encode())
 
-                thisHash.update(int(block.timestamp).to_bytes(8,'big'))
+                timestamp = int(block.timestamp)
+
+                thisHash.update(timestamp.to_bytes(8,'big'))
                             
-                thisHash.update(block.nonce.encode())
+                thisHash.update((block.nonce).encode())
                 
                 #This is the hash representation for this block       
                 thisHash = thisHash.hexdigest()
+                
+                #print("THIS IS NEW HASH: " + thisHash)
+                
+                if ( block.hash != None ) :
+                    if ( thisHash != block.hash ) :
+                        print("The hash in this block doesn't match the previous hash.")
+                        thisHash = None
         except :
             traceback.print_exc()
         #If this returns None, then the block was invalid
@@ -699,7 +690,7 @@ class Protocols :
         prevHash = None
         isValid = True
         for i in range(len(self.blocks)) :
-            print("PRINTING OUR GENESIS BLOCK: " + str(self.blocks[0].hash))
+            #print("PRINTING OUR HEIGHT: " + str(i))
             prevHash = self.validateBlock(self.blocks[i],prevHash)
             if ( prevHash == None ) :
                 isValid = False
@@ -708,6 +699,7 @@ class Protocols :
         if isValid :
             print("The chain is still valid! :D")
             self.chainReady = True
+            self.highestHash = prevHash
         else :
             print("The chain is not valid! :(")
             self.chainReady = False
@@ -743,8 +735,8 @@ class Protocols :
     def checkChainStatus ( self ) :
         print("in checkChainStatus")
         allGood = True
-        print("BLOCKS LENGTH: " + str(len(self.blocks)))
-        print("HEIGHT: " + str(self.highestHeight))
+        #print("BLOCKS LENGTH: " + str(len(self.blocks)))
+        #print("HEIGHT: " + str(self.highestHeight))
         if len(self.checkedBlocks) != 0 and sum(self.checkedBlocks) == 0 :
             for i in range(self.highestHeight) :
                 if (i >= len(self.blocks)) :
@@ -757,6 +749,7 @@ class Protocols :
         else :
             print("We haven't gotten all of the blocks back yet.")
             self.timeoutQueue.addTimeout("CHECK_CHAIN")
+            self.checkedBlocks = []
         
 
 
